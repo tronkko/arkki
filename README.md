@@ -1,19 +1,19 @@
 # arkki
-Client-server backup solution for Linux that is
+Arkki is a client-server backup solution for Linux that aims to store files
 
-  * Encrypted
-  * Stored off-site
+  * Encrypted,
+  * Stored off-site, and
   * Retrievable everywhere
 
 ## Encrypted
 
 Arkki uses public-key cryptography (GPG) to encrypt backup volumes.  Thus, no
-information is leaked even though somebody hacked the backup server or got
-hold of the files otherwise.
+information is leaked even though somebody got
+hold of the backed up files.
 
 ## Stored Off-site
 
-Arkki stores backup volumes to a remote server using SSH.  Thus, your files are
+Arkki stores backup volumes to a remote server.  Thus, your files are
 protected against physical destruction of your hardware - be it fire, flood or
 theft.
 
