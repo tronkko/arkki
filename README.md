@@ -1,5 +1,6 @@
 # arkki
-Arkki is a client-server backup solution for Linux.  Arkki stores files:
+Arkki is a client-server backup solution for Linux.  Arkki is designed to
+stores files:
 
   * Encrypted,
   * Stored off-site, and
@@ -30,7 +31,9 @@ even without Arkki installed.
 
 ## Incremential Backup
 
-## Recover File
+## Recover Single File
+
+## Recover directory
 
 
 # Installation 
