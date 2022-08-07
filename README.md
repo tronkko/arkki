@@ -1,7 +1,7 @@
 # Arkki Backup
 
-Arkki is a client-server backup solution for Linux.  Arkki is designed to
-stores archive files:
+Arkki is a backup solution for Linux.  Arkki is designed to stores archive
+files:
 
   * Encrypted,
   * Off-site, and
@@ -14,9 +14,9 @@ archives may be stored to removable disks or transmitted over internet.
 
 ## Off-site
 
-Arkki stores archives to a remote server.  Thus, your files are
-protected against physical destruction of your hardware - be it fire,
-flood or theft.
+Arkki stores archives to a removable hard-drive or a remote server.  Thus,
+your files are protected against physical destruction of your hardware - be it
+fire, flood or theft.
 
 ## Retrievable Everywhere
 
@@ -47,26 +47,18 @@ Options:
     --help             Show this message
 ```
 
-## Configuration
-
-In order to edit configuration, first create a configuration file as:
-
-    arkki init
-
-Configuration files are stored to .config/arkki directory in your home
-directory.  Open the default configuration file to your editor and update
-the file accordingly.
-
-
 ## Full Backup
 
-Back up files to a directory as:
+Back up files in your home directory to directory DIR as:
 
     arkki backup DIR
 
-where DIR is a directory name where to store the archive.  Directory
-argument may be omitted if you have set the output option in the
+Directory argument may be omitted if you have set the output option in the
 configuration file.
+
+By default, Arkki backs up all files in your home directory.  See
+configuration further below for infomation on how to leave out cache and
+temporary files from the back to reduce the size of the archive.
 
 
 ## Recover Files
@@ -89,14 +81,65 @@ Once you have identified the files or directories to retrieve, then
 copy the file names and extract them from the archive as
 
     gpg -d ARCHIVE | bunzip2 -c | tar xvf - FILES
-    
+
 where FILES is one or more file names from the list.
 
 
-# Installation 
+# Installation
 
 Copy the arkki file from this repository and place to file to a directory
 in your path.  For example, create directory bin in you home directory
 and copy the file there.  Most Linux distros already add bin to your
 path so arkki will be usable when you log back in.
+
+
+# Configuration
+
+In order to edit Arkki's configuration, first create a configuration file as:
+
+    arkki init
+
+By default, configuration files are stored to .config/arkki directory in your
+home directory.  Open the default configuration file to your editor and update
+the file accordingly.
+
+The default configuration file may contain:
+
+    [options]
+    root=/home/ec-user
+    output=
+    encrypt=ec-user@mydomain.com
+    compress=bzip2
+
+    [exclude]
+    pattern=/home/ec-user/.npm
+    pattern=/home/ec-user/.cache
+    pattern=*.tmp
+
+## Options Section
+
+### Root
+
+Root directory to back up.
+
+### Output
+
+Default output directory for backups.  May be left empty and supplied as an
+argument to backup command if the output directory will vary.
+
+### Encrypt
+
+User identifier for whom the backups will be encrypted.  Leave this to empty
+to product un-encrypted archives.
+
+### Compress
+
+Name of compressor, bzip2 or gzip, or empty product un-compressed archives.
+
+## Exclude Section
+
+This section contains a set of exclusion patterns.  Add an exclusion pattern
+for a file name or directory if you want to reduce the size of the archive.
+Exclusion pattern is typically a directory name, e.g. ``/home/user1/tmp'', or
+a wildcard pattern, e.g. ``*.obj''.
 
