@@ -125,7 +125,7 @@ Root directory to back up.
 ### Output
 
 Default output directory for backups.  May be left empty and supplied as an
-argument to backup command if the output directory will vary.
+argument to backup command if the output directory varies.
 
 ### Encrypt
 
@@ -140,6 +140,6 @@ Name of compressor, bzip2 or gzip, or empty product un-compressed archives.
 
 This section contains a set of exclusion patterns.  Add an exclusion pattern
 for a file name or directory if you want to reduce the size of the archive.
-Exclusion pattern is typically a directory name, e.g. ``/home/user1/tmp'', or
-a wildcard pattern, e.g. ``*.obj''.
+Exclusion pattern is typically a directory name, e.g. ``/home/user1/tmp``, or
+a wildcard pattern, e.g. `*.obj`.
 
