@@ -38,7 +38,7 @@ backup() {
         dir="$1"
         basename=""
     else
-        # Create to specified file
+        # Store archive to the specified file
         dir=`dirname "$1"`
         basename=`basename "$1"`
     fi
@@ -55,6 +55,7 @@ backup() {
 
     # Generate default name for the file
     if [[ -z "$basename" ]]; then
+        # Generate name for tar archive
         if [[ -z "$config" ]]; then
             # Generate file name according to current host.  For example, if
             # the current host is named "arch.localdomain", then generate file
@@ -65,6 +66,32 @@ backup() {
             # example, if the configuration file is ".config/arkki/home", then
             # generate file name "home-2022-08-01.tar"
             basename=`basename "$config"`-`date '+%Y-%m-%d'`.tar
+        fi
+
+        # Add compressor suffix to the file name
+        compress=`get_option compress`
+        if [[ -z "$compress" ]]; then
+            # No compress, no suffix
+            :
+        elif [[ "$compress" = "bzip2" ]]; then
+            # Bzip2 compression
+            basename="$basename.bz2"
+        elif [[ "$compress" = "gzip" ]]; then
+            # Gzip compression
+            basename="$basename.gz"
+        else
+            # Unknown compressor, no suffix
+            :
+        fi
+
+        # Add encryption suffix to the file name
+        encrypt=`get_option encrypt`
+        if [[ -z "$encrypt" ]]; then
+            # No encryption, no suffix
+            :
+        else
+            # GPG encrypted
+            basename="$basename.gpg"
         fi
     fi
 
@@ -94,7 +121,7 @@ backup() {
     fi
 
     # Construct tar command line and execute tar
-    debug "Backing up $root to $dir/$basename"
+    status "Backing up $root to $dir/$basename"
     cat "$fn" | awk -v verbose="$verbose" -v output="$dir/$basename" -- '
 BEGIN {
     mode = "init"
@@ -154,11 +181,9 @@ END {
     /* Compression */
     if (options["compress"] == "bzip2") {
         args[n++] = "--bzip2";
-        output = output ".bz2";
     }
     if (options["compress"] == "gzip") {
         args[n++] = "--gzip";
-        output = output ".gz";
     }
 
     /* Verbose */
@@ -184,7 +209,6 @@ END {
         args[n++] = "-e";
         args[n++] = "-r";
         args[n++] = escape(options["encrypt"]);
-        output = output ".gpg";
     }
 
     /* Output redirection */
