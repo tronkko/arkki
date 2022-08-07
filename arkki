@@ -1,0 +1,1079 @@
+#!/bin/bash
+# Arkki Backup
+#
+# Copyright (C) 2022 Toni Ronkko
+# This file is part of Arkki Backup.  Arkki Backup may be freely distributed
+# under the MIT license.  For all details and documentation, see
+# https://github.com/tronkko/arkki
+#
+#set -x
+set -ueo pipefail
+
+# Default options
+command=
+mode=
+done=false
+configdir="$HOME/.config/arkki"
+config=
+verbose=:
+quiet=false
+version=1.0
+
+# Back up files
+backup() {
+    # Get output directory or file name
+    if [[ $# -gt 1 ]]; then
+        error "Too many arguments"
+        return 1
+    elif [[ $# -eq 0 ]]; then
+        # Create file to default output directory
+        dir=`get_option output`
+        basename=""
+        if [[ -z "$dir" ]]; then
+            error "Output directory not specified"
+            return 1
+        fi
+    elif [[ -d "$1" ]]; then
+        # Create new file to the specified directory
+        dir="$1"
+        basename=""
+    else
+        # Create to specified file
+        dir=`dirname "$1"`
+        basename=`basename "$1"`
+    fi
+
+    # Ensure that output directory exists and is writeable
+    if [[ ! -d "$dir" ]]; then
+        error "Directory $dir does not exist"
+        return 1
+    fi
+    if [[ ! -w "$dir" ]]; then
+        error "Directory $dir not writable"
+        return 1
+    fi
+
+    # Generate default name for the file
+    if [[ -z "$basename" ]]; then
+        if [[ -z "$config" ]]; then
+            # Generate file name according to current host.  For example, if
+            # the current host is named "arch.localdomain", then generate file
+            # name "arch-2022-08-01.tar".
+            basename=`hostname -s`-`date '+%Y-%m-%d'`.tar
+        else
+            # Generate file name according to the configuration file.  For
+            # example, if the configuration file is ".config/arkki/home", then
+            # generate file name "home-2022-08-01.tar"
+            basename=`basename "$config"`-`date '+%Y-%m-%d'`.tar
+        fi
+    fi
+
+    # Ensure that root directory is set
+    root=`get_option root`
+    if [[ -z "$root" ]]; then
+        error "Root directory not set"
+        return 1
+    fi
+    if [[ -h "$root" ]]; then
+        error "Cannot use symbolic link as a root directory"
+        return 1
+    fi
+    if [[ ! -d "$root" ]]; then
+        error "Invalid root directory $root"
+        return 1
+    fi
+
+    # Locate configuration file from disk
+    fn=`config_file`
+
+    # Create configuration file if it does not yet exist
+    if [[ ! -r "$fn" ]]; then
+        if ! create_config "$fn"; then
+            return 1
+        fi
+    fi
+
+    # Construct tar command line and execute tar
+    debug "Backing up $root to $dir/$basename"
+    cat "$fn" | awk -v verbose="$verbose" -v output="$dir/$basename" -- '
+BEGIN {
+    mode = "init"
+
+    /* Initialize conversion tables */
+    for (i = 0; i < 256; i++) {
+        c = sprintf("%c", i);
+        if (match(c, "[-a-zA-Z0-9_,.=@/+:%]")) {
+            ord[c] = c;
+        } else {
+            ord[c] = "\\" c;
+        }
+    }
+}
+
+/* Escape each character of the argument */
+function escape(str,      i, n, result) {
+    n = length(str);
+    result = "";
+    for (i = 1; i <= n; i++) {
+        result = result ord[substr(str, i, 1)];
+    }
+    return result;
+}
+
+/^\[(options|exclude)\]/ {
+    /* Extract topic between [ and ] */
+    mode = $0;
+    gsub("[^a-z]", "", mode);
+
+    /* Read next line from input */
+    next;
+}
+
+/./ {
+    /* Split row into key and value */
+    key = $0;
+    gsub("=.*$", "", key);
+    value = $0;
+    gsub("^[^=]*=?", "", value);
+
+    /* Store according to mode */
+    switch (mode) {
+    case "options":
+        options[key] = value;
+        break;
+
+    case "exclude":
+        exclude[value] = value;
+        break;
+    }
+}
+
+END {
+    n = 0;
+
+    /* Compression */
+    if (options["compress"] == "bzip2") {
+        args[n++] = "--bzip2";
+        output = output ".bz2";
+    }
+    if (options["compress"] == "gzip") {
+        args[n++] = "--gzip";
+        output = output ".gz";
+    }
+
+    /* Verbose */
+    if (verbose == "") {
+        args[n++] = "-v";
+    }
+
+    /* Construct tar command with exclude options */
+    for (i in exclude) {
+        patt = exclude[i];
+        gsub("/$", "", patt);
+        args[n++] = sprintf("--exclude=%s", escape(patt));
+    }
+    args[n++] = "-cf";
+    args[n++] = "-";
+    args[n++] = "--";
+    args[n++] = escape(options["root"]);
+
+    /* Encryption options */
+    if (options["encrypt"]) {
+        args[n++] = "|";
+        args[n++] = "gpg";
+        args[n++] = "-e";
+        args[n++] = "-r";
+        args[n++] = escape(options["encrypt"]);
+        output = output ".gpg";
+    }
+
+    /* Output redirection */
+    args[n++] = ">";
+    args[n++] = escape(output);
+
+    /* Merge arguments into command line */
+    cmdline = "tar";
+    for (i = 0; i < n; i++) {
+        cmdline = cmdline " " args[i];
+    }
+
+    /* Execute tar command */
+    system(cmdline);
+}
+'
+}
+
+# Initialize new configuration file
+initialize() {
+    # Get the name of configuration file
+    if [[ $# -eq 0 ]]; then
+        if [[ -z "$config" ]]; then
+            config="default"
+        fi
+    elif [[ $# -eq 1 ]]; then
+        config="$1"
+    else
+        error "Too many arguments"
+        return 1
+    fi
+
+    # Locate the configuration file
+    fn=`config_file`
+
+    # Create fresh configuration file
+    create_config "$fn"
+}
+
+# Create new configuration file with all options
+create_config() {
+    # Get the absolute file name
+    if [[ $# -ne 1 ]]; then
+        error "Invalid number of arguments"
+        return 1
+    fi
+    fn="$1"
+
+    # Exit immediately if the named configuration file already exists
+    if [[ -r "$fn" ]]; then
+        error "Configuration file $fn already exists"
+        return 1
+    fi
+
+    # Create configuration file
+    status "Created configuration file $fn"
+    if ! touch "$fn"; then
+        # Cannot create file
+        return 1
+    fi
+    cat > "$fn" <<EOF
+[options]
+version=$version
+root=$HOME
+output=
+encrypt=
+compress=bzip2
+
+[exclude]
+pattern=$HOME/.cache
+pattern=*.tmp
+EOF
+}
+
+# Modify option in configuration file
+set_option() {
+    # Get the option name and new value
+    if [[ $# -eq 2 ]]; then
+        # Set option to given value
+        option="$1"
+        value="$2"
+    elif [[ $# -eq 1 ]]; then
+        # Remove existing value
+        option="$1"
+        value=""
+    elif [[ $# -gt 2 ]]; then
+        error "Too many arguments"
+        return 1
+    else
+        error "Missing option name"
+        return 1
+    fi
+
+    # Locate configuration file from disk
+    fn=`config_file`
+
+    # Create configuration file if it does not yet exist
+    if [[ ! -r "$fn" ]]; then
+        if ! create_config "$fn"; then
+            return 1
+        fi
+    fi
+
+    # Create temporary file
+    tmpfile="/tmp/arkki.$$"
+
+    # Debug
+    if [[ -s "$value" ]]; then
+        debug "Setting option $option to $value"
+    else
+        debug "Removing option $option"
+    fi
+
+    # Print the updated configuration to the temporary file
+    ( cat "$fn" | awk -v option="$option" -v new_value="$value" -- '
+BEGIN {
+    mode = "init"
+}
+
+/^\[(options|exclude)\]/ {
+    /* Extract topic between [ and ] */
+    mode = $0;
+    gsub("[^a-z]", "", mode);
+
+    /* Read next line from input */
+    next;
+}
+
+/./ {
+    /* Split row into key and value */
+    key = $0;
+    gsub("=.*$", "", key);
+    value = $0;
+    gsub("^[^=]*=?", "", value);
+
+    /* Store value */
+    switch (mode) {
+    case "options":
+        options[key] = value;
+        break;
+
+    case "exclude":
+        exclude[value] = value;
+        break;
+    }
+}
+
+END {
+    /* Update option value, add new option or remove value */
+    options[option] = new_value;
+
+    /* Re-construct configuration file to output */
+    printf("[options]\n");
+    for (i in options) {
+        printf("%s=%s\n", i, options[i]);
+    }
+    printf("\n[exclude]\n");
+    for (i in exclude) {
+        printf("pattern=%s\n", i, exclude[i]);
+    }
+}
+' || true) > "$tmpfile"
+
+    # Stop now if we weren't able to create the temporary file
+    if [[ ! -s "$tmpfile" ]]; then
+        # Was not able to create temporary file
+        rm -f "$tmpfile"
+        return 1
+    fi
+
+    # Replace original configuration file with the temporary file
+    if ! cat "$tmpfile" > "$fn"; then
+        # Was not able to overwrite configuration file
+        return 1
+    fi
+
+    # Remove now redundant temporary file
+    rm -f "$tmpfile"
+}
+
+# Add exclusion pattern
+add_pattern() {
+    # Get the pattern
+    if [[ $# -gt 1 ]]; then
+        error "Too many arguments"
+        return 1
+    elif [[ $# -eq 0 ]]; then
+        error "Pattern required"
+        return 1
+    fi
+    pattern="$1"
+
+    debug "Adding pattern $pattern"
+    # FIXME:
+}
+
+# List files to be backed up
+list_files() {
+    # Check arguments
+    if [[ $# -gt 0 ]]; then
+        error "Too many arguments"
+        return 1
+    fi
+
+    # Locate configuration file from disk
+    fn=`config_file`
+
+    # Automatically create new configuration file if needed
+    if [[ ! -r "$fn" ]]; then
+        if ! create_config "$fn"; then
+            return 1
+        fi
+    fi
+
+    # Ensure that root directory is set
+    root=`get_option root`
+    if [[ -z "$root" ]]; then
+        error "Root directory not set"
+        return 1
+    fi
+
+    # Construct tar command line and execute tar
+    cat "$fn" | awk -- '
+BEGIN {
+    mode = "init"
+
+    /* Initialize conversion tables */
+    for (i = 0; i < 256; i++) {
+        c = sprintf("%c", i);
+        if (match(c, "[-a-zA-Z0-9_,.=@/+:%]")) {
+            ord[c] = c;
+        } else {
+            ord[c] = "\\" c;
+        }
+    }
+}
+
+/* Escape each character of the argument */
+function escape(str,      i, n, result) {
+    n = length(str);
+    result = "";
+    for (i = 1; i <= n; i++) {
+        result = result ord[substr(str, i, 1)];
+    }
+    return result;
+}
+
+/^\[(options|exclude)\]/ {
+    /* Extract topic between [ and ] */
+    mode = $0;
+    gsub("[^a-z]", "", mode);
+
+    /* Read next line from input */
+    next;
+}
+
+/./ {
+    /* Split row into key and value */
+    key = $0;
+    gsub("=.*$", "", key);
+    value = $0;
+    gsub("^[^=]*=?", "", value);
+
+    /* Store according to mode */
+    switch (mode) {
+    case "options":
+        options[key] = value;
+        break;
+
+    case "exclude":
+        exclude[value] = value;
+        break;
+    }
+}
+
+END {
+    /* Construct tar command with exclude options */
+    n = 0;
+    for (i in exclude) {
+        patt = exclude[i];
+        gsub("/$", "", patt);
+        args[n++] = sprintf("--exclude=%s", escape(patt));
+    }
+    args[n++] = "-cvf";
+    args[n++] = "/dev/null";
+    args[n++] = "--";
+    args[n++] = escape(options["root"]);
+
+    /* Merge arguments into command line */
+    cmdline = "tar";
+    for (i = 0; i < n; i++) {
+        cmdline = cmdline " " args[i];
+    }
+    system(cmdline);
+}
+'
+}
+
+# Read option from configuration file and output it.  Be ware that any output
+# is captured by the caller and the function below must not print any error
+# messages to standard output!  Thus, do not use functions debug or status
+# below!  Error is fine to use as it outputs to standard error.
+get_option() {
+    # Parse arguments
+    if [[ $# -eq 0 ]]; then
+        error "Missing option name"
+        return 1
+    elif [[ $# -eq 1 ]]; then
+        option="$1"
+        default=""
+    elif [[ $# -eq 2 ]]; then
+        option="$1"
+        default="$2"
+    else
+        error "Too many options"
+        return 1
+    fi
+
+    # Locate configuration file from disk
+    fn=`config_file`
+    if [[ -r "$fn" ]]; then
+        :
+    else
+        # Configuration file not found => print default value
+        printf "%s" "$default"
+        return 0
+    fi
+
+    # Read configuration file and output option
+    cat "$fn" | awk -v option="$option" -v default_value="$default" -- '
+BEGIN {
+    mode = "init"
+}
+
+/^\[(options|exclude)\]/ {
+    /* Extract topic between [ and ] */
+    mode = $0;
+    gsub("[^a-z]", "", mode);
+
+    /* Read next line from input */
+    next;
+}
+
+/./ {
+    /* Store options */
+    if (mode == "options") {
+        /* Split row into key and value */
+        key = $0;
+        gsub("=.*$", "", key);
+        value = $0;
+        gsub("^[^=]*=?", "", value);
+
+        /* Store value */
+        options[key] = value;
+    }
+}
+
+END {
+    /* Locate the requested option */
+    if (options[option]) {
+        printf("%s", options[option]);
+    } else {
+        printf("%s", default_value);
+    }
+}
+'
+}
+
+# Load configuration file and print its contents to standard output
+print_patterns() {
+    # Get the name of configuration file
+    if [[ $# -eq 0 ]]; then
+        if [[ -z "$config" ]]; then
+            config="default"
+        fi
+    elif [[ $# -eq 1 ]]; then
+        config="$1"
+    else
+        error "Too many arguments"
+        return 1
+    fi
+
+    # Locate configuration file from disk
+    fn=`config_file`
+    if [[ -r "$fn" ]]; then
+        :
+    else
+        error "Configuration file $fn not found"
+        return 1
+    fi
+
+    # Output keys in the file
+    status "# $fn"
+    if ! cat "$fn"; then
+        return 1
+    fi
+}
+
+# Execute command
+command() {
+    # Extract command from arguments
+    if [[ $# -gt 0 ]]; then
+        command="${1,,*}"
+        shift
+    else
+        # No command provided
+        return 1
+    fi
+
+    # Execute command
+    case "$command" in
+    backup|back|bac|ba|b)
+        # Back up to file
+        if ! backup "$@"; then
+            # Error
+            return 1
+        fi
+        ;;
+
+    initialize|init)
+        # Initialize new configuration file
+        if ! initialize "$@"; then
+            # Error
+            return 1
+        fi
+        ;;
+
+    setroot|set-root|root|ro)
+        # Set root directory
+        if ! set_option root "$@"; then
+            # Error
+            return 1
+        fi
+        ;;
+
+    encrypt|enc)
+        # Set encrypt option
+        if ! set_option encrypt "$@"; then
+            # Error
+            return 1
+        fi
+        ;;
+
+    exclude|excl|exc|ex)
+        # Add exclusion pattern
+        if ! add_pattern "$@"; then
+            # Error
+            return 1
+        fi
+        ;;
+
+    list|li)
+        # List files to back up
+        if ! list_files "$@"; then
+            # Error
+            return 1
+        fi
+        ;;
+
+    print|pr|p)
+        # Print patterns
+        if ! print_patterns "$@"; then
+            # Error
+            return 1
+        fi
+        ;;
+
+    help|h)
+        # Show help on topic
+        if ! help "$@"; then
+            # Invalid topic
+            return 1
+        fi
+        ;;
+
+    version|ver)
+        # Show version
+        if ! print_version "$@"; then
+            return 1
+        fi
+        ;;
+
+    quit|q|exit)
+        # Return exit status 99 so that the caller can exit the input loop on
+        # interactive mode.  Due to functions, we cannot pass the information
+        # to caller with a global variable!
+        return 99
+        ;;
+
+    *)
+        error "Invalid command"
+        return 1
+        ;;
+    esac
+
+    # Command executed successfully
+    return 0
+}
+
+# Find configuration file and output its full path to standard output
+config_file() {
+    # Is the configuration file set?
+    if [[ -z "$config" ]]; then
+        # No, use the default configuration file
+        config="$configdir/default"
+    else
+        # Does the configuration file have a directory in it?
+        dir=`echo "$config" | sed -e 's:[^/]::g'`
+        if [[ -z "$dir" ]]; then
+            # No, the configuration file specified by the user does not
+            # contain a slash so place it to the default directory.
+            config="$configdir/$config"
+        fi
+    fi
+
+    # Pass the full path name to caller
+    printf "%s" "$config"
+}
+
+# Terminate the application with an error message
+fail() {
+    printf "%s\n" "$1" 1>&2
+    exit 3
+}
+
+# Display an error message without terminating the application
+error() {
+    printf "%s\n" "$1" 1>&2
+}
+
+# Display message unless quiet option is turned on.  This is useful for
+# printing status messages.
+status() {
+    if ! "$quiet"; then
+        printf "%s\n" "$1"
+    fi
+}
+
+# Display message if verbose output is turned on.  This is useful for
+# debugging Arkki.
+debug() {
+    $verbose printf "%s\n" "$1"
+}
+
+# Read text from standard input and fold it to match the output terminal
+output() {
+    # Get number of columns if output is associated with a terminal
+    if [[ -t 1 ]]; then
+        cols=`tput cols`
+    else
+        cols=80
+    fi
+
+    # Fold text to available columns
+    fold -s --width="$cols"
+}
+
+# Show current version
+print_version() {
+    # Check arguments
+    if [[ $# -gt 0 ]]; then
+        error "Too many arguments"
+        return 1
+    fi
+
+    # Print version number
+    printf "Arkki version %1\n" "$version"
+}
+
+# Show usage
+print_usage() {
+    printf "Usage: arkki [options] command [arguments]\n"
+}
+
+# Show available commands
+print_commands() {
+    # List general commands for both interactive and batch modes
+    output <<EOF
+Commands:
+    backup [dir/file]  Backup root to target directory or file
+    init [file]        Create new configuration file
+    setroot [dir]      Set root directory to back up
+    exclude [patt]     Exclude files matching the pattern
+    list               List files to be included in the backup
+    print              Print current configuration
+    help [command]     Show help on command
+EOF
+
+    # Exit without printing interactive commands if we are in batch mode
+    if [[ "$mode" != interactive ]]; then
+        return;
+    fi
+
+    # List commands for interactive mode
+    output <<EOF
+    version            Show current version
+    quit               Exit interactive mode
+
+Commands may be abbreviated. For example, h is an alias for help and q is an alias for quit.
+EOF
+}
+
+# Show general options
+print_options() {
+    output <<EOF
+Options:
+    --config file      Set configuration file to use
+    --interactive      Enable interactive mode even though input is a file
+    --batch            Run in batch mode
+    --version          Show version and quit
+    --verbose          Print additional status messages
+    --quiet            Hide status messages and progress indicators
+    --help             Show this message
+EOF
+}
+
+# List help topics
+print_topics() {
+    output <<EOF
+Help is available on topics:
+
+backup          init            setroot         encrypt         exclude
+list            print           usage           commands        options
+version         help
+
+Re-run the help command with an argument to read more on a topic, e.g. "help commands" shows list of commands.
+EOF
+}
+
+# Show help on a topic
+help() {
+    # Get the topic
+    if [[ $# -eq 1 ]]; then
+        # Show help on specific topic
+        topic="$1"
+    elif [[ $# -eq 0 ]]; then
+        # Show general help
+        topic=""
+    else
+        error "Too many arguments"
+        return 1
+    fi
+
+    # Show help on topic
+    case "$topic" in
+    backup|back|bac|ba|b)
+        output <<EOF
+Command "backup [file/directory]" reads, packs and encrypts files under the root directory and stores the resulting archive to the specified file or directory. If the argument is omitted, then the command will generate a new file name based on the current date and store the archive to default output directory specified in the configuration file.
+
+The command backup may be abbreviated to b.
+EOF
+        ;;
+
+    initialize|init)
+        output <<EOF
+Command "init [file]" prepares a new configuration file with default settings. You can then change options and add exclusion patterns to the configuration file with your favorite text editor! The default location for configuration directories is $configdir. To create a configuration file in another directory, just add a path to the argument.
+
+Use the configuration file for backups by specifying the file with --config option. For example, command
+
+    arkki --config ./home.conf backup /tmp
+
+will read the configuration file ./home.conf and back up the corresponding files to an archive file in the /tmp directory.
+EOF
+        ;;
+    setroot|set-root|root|ro)
+        output <<EOF
+Command "setroot [directory]" specifies the root directory which will be backup up. The root directory may be "/" in which case all the files in the system will be backed up (depending on the access permissions). However, root directory in Arkki may also refer to your home directory or a sub-directory within your home directory. This allows you to back up sub-sets of files more frequently.
+
+The command setroot may be abbreviated to ro.
+EOF
+        ;;
+
+    encrypt|encr|enc)
+        output <<EOF
+Command "encrypt [email]" specifies the user identifier for whom the backups will be encrypted. If the user identifier has never been set with this command, or the existing key has been removed by invoking this command without an argument, then the backups will not be encrypted.
+
+User identifier supplied with the command is typically an email address for which you have created a GPG key pair. If you haven't set up your keys yet, then generate key pair from command-line with GPG as
+
+    gpg --full-generate-key
+
+The command encrypt may be abbreviated to enc.
+EOF
+        ;;
+
+    exclude|excl|exc|ex)
+        output <<EOF
+Command "exclude [pattern]" adds an exclusion pattern to the current configuration set. Exclusion patterns are matched against file names when backing up and any matching files are left out of the generated archive. Exclusion pattern is typically a directory name, e.g. /home/user1/tmp, or a wildcard pattern, e.g. *.obj.
+
+In order to remove an incorrect pattern, edit the configuration file with your favorite text editor.
+
+The command exclude may be abbreviated to ex.
+EOF
+        ;;
+
+    list|li)
+        output <<EOF
+List files to be backed up according to the current configuration set.
+
+The command list may be abbreviated to li.
+EOF
+        ;;
+
+    print|pr|p)
+        output <<EOF
+Command "print [file]" prints the configuration file with options and exclude patterns. If no argument is specified, then the function prints the default configuration file. To print another configuration file, just specify the file name as an argument to the print command or use --config option.
+
+The command print may be abbreviated to pr or p.
+EOF
+        ;;
+
+    usage|us)
+        print_usage
+        ;;
+
+    commands|command|com|cmd)
+        print_commands
+        ;;
+
+    options|option|opts|opt)
+        print_options
+        ;;
+
+    version|ver|v)
+        print_version
+        ;;
+
+    help|h|topics)
+        print_topics
+        ;;
+
+    "")
+        if [[ "$mode" = 'interactive' ]]; then
+            print_topics
+        else
+            print_usage
+            print_commands
+            print_options
+        fi
+        ;;
+
+    *)
+        error "No help available on $1"
+        return 1
+    esac
+
+    # Success
+    return 0
+}
+
+# Parse general command line options for all commands
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --config|-c)
+        # Set name of configuration file
+        shift
+        if [[ $# -eq 0 ]]; then
+            fail "Option $1 requires an argument"
+        fi
+        config="$1"
+        ;;
+    --config=*)
+        config="${1#--config=}"
+        ;;
+    -c*)
+        config="${1#-c}"
+        ;;
+
+    --verbose|-v)
+        # Enable verbose output
+        verbose=
+        quiet=false
+        ;;
+
+    --quiet|-q)
+        # Be extra quiet
+        verbose=:
+        quiet=true
+        ;;
+
+    --version)
+        # Show version and exit
+        print_version
+        exit 3
+        ;;
+
+    --interactive|-i)
+        # Enable interactive operating mode
+        mode=interactive
+        ;;
+
+    --batch|-b)
+        # Enable batch operating mode
+        mode=batch
+        ;;
+
+    --help|-h)
+        # Show help immediately and terminate the application without
+        # processing further arguments from the command line.
+        help
+        exit 3
+        ;;
+
+    *)
+        # First name in command line terminates the processing of options
+        break
+        ;;
+
+    --)
+        # Double dash ends processing of further options
+        shift
+        break
+        ;;
+
+    -*)
+        fail "Invalid option $1"
+        ;;
+    esac
+
+    # Advance to next option
+    shift
+done
+
+# Auto-detect mode if not set in command line
+if [[ -z "$mode" ]]; then
+    # Enable interactive mode if no command is provided and standard input is
+    # a terminal.
+    if [[ $# -eq 0 && -t 0 ]]; then
+        mode=interactive
+    else
+        mode=batch
+    fi
+fi
+
+# Execute according to mode
+case "$mode" in
+interactive)
+    status "Entering interactive mode... Press Ctlr+C or type q to exit."
+    while true; do
+        # Read line from keyboard
+        if ! read -p 'Arkki> '; then
+            # Ctrl+D pressed so exit the loop
+            break
+        fi
+
+        # Execute command.  Be ware that we cannot reverse the condition
+        # with an asterisk to avoid the first branch as this changes the exit
+        # code!  Also note that $REPLY must not be enclosed in quotation
+        # marks: the code below relies on the fact the bash will split the
+        # content in REPLY into distinct arguments separated by spaces.
+        if command $REPLY; then
+            # All OK
+            :
+        else
+            # Parse error code from the last command
+            case $? in
+            1)
+                # Regular error
+                ;;
+
+            99)
+                # Exit/quit command
+                break
+                ;;
+            esac
+        fi
+    done
+    ;;
+
+batch)
+    # If the command is omitted, then perform basic backup using default
+    # settings, if set.  This makes it easy to backup from crontab or scripts:
+    # you can make a new backup just be running arkki without command line
+    # options.
+    if [[ $# -eq 0 ]]; then
+        if ! backup; then
+            exit 3
+        fi
+    fi
+
+    # Read command from command line
+    if ! command "$@"; then
+        # Error executing the command.  Exit the application with an error
+        # code to signal caller about the failure.
+        exit 3
+    fi
+    ;;
+
+*)
+    fail "Invalid mode $mode"
+    ;;
+esac
+

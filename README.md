@@ -1,4 +1,4 @@
-# Arkki Bakcup
+# Arkki Backup
 
 Arkki is a client-server backup solution for Linux.  Arkki is designed to
 stores archive files:
